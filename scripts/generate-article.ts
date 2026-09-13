@@ -338,6 +338,24 @@ security, and compliance on a production Domino environment and wants
 something they can act on, not a feature summary they could get from the
 release notes alone.
 
+OPERATIONAL COMPLETENESS. This is the single most common reason articles get
+rejected, read it twice. When you describe a command, a configuration
+screen, or a step that sounds like it fully accomplishes something (enables
+a schedule, restores a point in time, integrates a third party, protects a
+database), stop and check whether that step is actually self-sufficient in
+the real product, or whether it silently depends on something you have not
+mentioned yet: a mode or setting that must be turned on elsewhere before this
+step works at all, a companion piece of data that must be backed up or
+restored alongside it or the result is incomplete, a request or document
+that must already exist before the command does anything, a task that must
+be scheduled somewhere for it to repeat rather than run once. Search for
+that prerequisite before writing the sentence. If you cannot confirm one
+exists, say so plainly rather than implying the single step is the whole
+procedure. A shorter article that names its own limitations is far better
+than a longer one that reads as complete but skips a precondition, an admin
+who follows it during a real incident and hits that gap has no time to
+discover it there.
+
 ============================================================
 HARD CONSTRAINTS, read these BEFORE picking a topic
 ============================================================
