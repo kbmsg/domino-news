@@ -1,13 +1,23 @@
 /**
- * Daily HCL Domino article generator.
+ * Daily HCL Domino ADMINISTRATION article generator.
  *
- * Strict source-grounded flow:
+ * Adapted from the original bilingual, developer-focused generator. Two
+ * changes drive everything else in this file:
+ *   1. English only. The zh-TW / en split, the language-discipline prompt
+ *      sections, and the per-language file writing are gone.
+ *   2. Administrator audience, not developer. The content tiers, the tag
+ *      taxonomy, the doc roots mined for TIER C deep-dives, and the
+ *      persona in the prompt all changed to match someone who runs
+ *      Domino servers, not someone who writes code against them.
+ *
+ * Strict source-grounded flow (unchanged from the original):
  *   1. Load recent post titles to avoid duplicates.
- *   2. Ask OpenAI (with web_search) to find ONE noteworthy story published in the
- *      last 72 hours, citing real sources only.
- *   3. Validate: >=2 real source URLs, body contains >=2 inline links, no banned
- *      placeholder hosts (example.com, etc.).
- *   4. Write zh-TW and en Markdown into src/content/posts/{lang}/YYYY-MM-DD-slug.md.
+ *   2. Ask OpenAI (with web_search) to find ONE noteworthy story published in
+ *      the last 72 hours, citing real sources only.
+ *   3. Validate: >=2 real source URLs, body contains >=3 inline links, no
+ *      banned placeholder hosts (example.com, etc.), no single URL
+ *      dominating the citations.
+ *   4. Write Markdown into src/content/posts/YYYY-MM-DD-slug.md.
  *
  * Required env: OPENAI_API_KEY
  * Optional env: OPENAI_MODEL (default gpt-4o)
@@ -25,6 +35,8 @@ import { generateCoverImage } from './lib/cover-prompt.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT = join(__dirname, '..');
+// No language subdirectory: this is an English-only site, so posts live
+// directly under src/content/posts/YYYY-MM-DD-slug.md.
 const POSTS_DIR = join(ROOT, 'src', 'content', 'posts');
 
 const MODEL = process.env.OPENAI_MODEL ?? 'gpt-4o';
@@ -33,47 +45,52 @@ const TITLE_LOOKBACK_DAYS = 14;
 const COVERS_DIR = join(ROOT, 'public', 'covers');
 const DRAFTS_DIR = join(ROOT, '_drafts');
 
-// Tag taxonomy is split across 4 axes. See README "Tag taxonomy" for the
-// reasoning. Pick 2-4 tags per article, ideally one from each axis that
-// applies. Avoid umbrella tags like "Domino" / "HCL" — every post is by
-// definition Domino-related, so those add no signal.
+// Tag taxonomy is split across 4 axes, mirrored in src/lib/tags.ts. Pick
+// 2-4 tags per article, ideally one from each axis that applies. Avoid
+// umbrella tags like "Domino" or "HCL": every post is by definition
+// Domino-related, so those add no signal.
 const TAGS_PRODUCT = [
   'Domino Server',
   'Notes Client',
-  'Domino Designer',
+  'Domino Directory',
+  'ID Vault',
   'Domino REST API',
-  'Volt MX',
-  'Nomad',
-  'AppDev Pack',
-  'Sametime',
+  'HCL Nomad',
   'Domino IQ',
+  'Sametime',
+  'HCL Traveler',
 ] as const;
 
-const TAGS_TECH = [
-  'LotusScript',
-  'Formula',
-  'Java',
-  'XPages',
-  'JavaScript',
-  'DQL',
+const TAGS_SUBSYSTEM = [
+  'Router',
+  'Replicator',
+  'HTTP Task',
+  'Agent Manager',
+  'DAOS',
+  'Transaction Logging',
+  'Clustering',
+  'Directory Assistance',
+  'Console Commands',
+  'Notes.ini',
   'OIDC',
-  'Notes UI',
 ] as const;
 
 const TAGS_TOPIC = [
   'Security',
   'Performance',
   'Migration',
-  'Backup',
-  'DevOps',
-  'Admin',
+  'Backup and Recovery',
+  'High Availability',
+  'Compliance',
+  'Licensing',
+  'Monitoring',
 ] as const;
 
-const TAGS_TYPE = ['Release Notes', 'Tutorial', 'News', 'Community'] as const;
+const TAGS_TYPE = ['Release Notes', 'Tutorial', 'News', 'Community', 'Incident Report'] as const;
 
 const ALLOWED_TAGS = [
   ...TAGS_PRODUCT,
-  ...TAGS_TECH,
+  ...TAGS_SUBSYSTEM,
   ...TAGS_TOPIC,
   ...TAGS_TYPE,
 ] as const;
@@ -89,6 +106,10 @@ const BANNED_HOSTS = new Set([
   'yoursite.com',
 ]);
 
+// Unchanged from the original list. These hosts were already admin-relevant
+// (nashcom.de is Daniel Nashed's well-known Domino admin blog; panagenda
+// and prominic are admin tooling vendors), so nothing here needed to
+// change for the new audience.
 const TRUSTED_HOST_HINTS = [
   'hcl-software.com',
   'support.hcl-software.com',
@@ -110,28 +131,30 @@ const TRUSTED_HOST_HINTS = [
   'belsoft.com',
 ];
 
-interface BilingualArticle {
+interface Article {
   slug: string;
   tags: string[];
-  zh: { title: string; description: string; markdown: string };
-  en: { title: string; description: string; markdown: string };
   sources: { title: string; url: string }[];
+  relatedConsoleCommands: string[];
+  notesIniSettings: string[];
+  minDominoVersion?: string;
+  title: string;
+  description: string;
+  markdown: string;
   cover?: string;
   coverStyle?: string;
 }
 
 function todayIso(): string {
   // Stamp posts by Taipei calendar day so a 07:00 Taipei publish doesn't
-  // get a UTC-yesterday date. Used for the YYYY-MM-DD- filename prefix.
+  // get a UTC-yesterday date. Swap the timeZone here if you move the cron
+  // to run relative to a different timezone (US-hours publish, say).
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
 }
 
 function nowTaipeiTimestamp(): string {
-  // Full Taipei timestamp, e.g. "2026-04-28T18:30:42+08:00". Used as the
-  // pubDate so posts are sortable down to the second — without this every
-  // post on the same day would tie at UTC-midnight and fall back to slug
-  // alphabetical, making newer hand-edits look older than alphabetically
-  // earlier siblings.
+  // Full timestamp, e.g. "2026-04-28T18:30:42+08:00". Used as the pubDate
+  // so posts are sortable down to the second.
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Taipei',
     year: 'numeric', month: '2-digit', day: '2-digit',
@@ -177,33 +200,9 @@ function frontmatter(data: Record<string, unknown>): string {
   return lines.join('\n');
 }
 
-async function loadRecentTitles(lang: 'zh-TW' | 'en'): Promise<string[]> {
-  const dir = join(POSTS_DIR, lang);
-  if (!existsSync(dir)) return [];
-  const files = await readdir(dir);
-  const cutoff = Date.now() - TITLE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
-  const titles: string[] = [];
-  for (const f of files) {
-    if (!f.endsWith('.md') && !f.endsWith('.mdx')) continue;
-    const datePart = f.slice(0, 10);
-    const ts = Date.parse(datePart);
-    if (Number.isNaN(ts) || ts < cutoff) continue;
-    const raw = await readFile(join(dir, f), 'utf8');
-    const m = raw.match(/^title:\s*"?([^"\n]+?)"?\s*$/m);
-    if (m) titles.push(m[1].trim());
-  }
-  return titles;
-}
-
-/**
- * Returns recent posts (last TITLE_LOOKBACK_DAYS days) with the metadata
- * needed for semantic dedup by the Claude reviewer: slug + title + a short
- * description. We use the EN side preferentially (reviewer reads English).
- */
 async function loadRecentPostsMeta(): Promise<RecentPost[]> {
-  const dir = join(POSTS_DIR, 'en');
-  if (!existsSync(dir)) return [];
-  const files = await readdir(dir);
+  if (!existsSync(POSTS_DIR)) return [];
+  const files = await readdir(POSTS_DIR);
   const cutoff = Date.now() - TITLE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
   const posts: RecentPost[] = [];
   for (const f of files) {
@@ -211,7 +210,7 @@ async function loadRecentPostsMeta(): Promise<RecentPost[]> {
     const datePart = f.slice(0, 10);
     const ts = Date.parse(datePart);
     if (Number.isNaN(ts) || ts < cutoff) continue;
-    const raw = await readFile(join(dir, f), 'utf8');
+    const raw = await readFile(join(POSTS_DIR, f), 'utf8');
     const slug = raw.match(/^slug:\s*"?([^"\n]+?)"?\s*$/m)?.[1]?.trim();
     const title = raw.match(/^title:\s*"?([^"\n]+?)"?\s*$/m)?.[1]?.trim();
     const description = raw.match(/^description:\s*"?([^"\n]+?)"?\s*$/m)?.[1]?.trim();
@@ -226,16 +225,15 @@ async function loadRecentPostsMeta(): Promise<RecentPost[]> {
  * when generating a new cover so consecutive posts don't repeat styles.
  */
 async function loadRecentCoverStyles(n: number): Promise<string[]> {
-  const dir = join(POSTS_DIR, 'en');
-  if (!existsSync(dir)) return [];
-  const files = (await readdir(dir))
+  if (!existsSync(POSTS_DIR)) return [];
+  const files = (await readdir(POSTS_DIR))
     .filter((f) => f.endsWith('.md') || f.endsWith('.mdx'))
     .sort()
     .reverse()
     .slice(0, n);
   const styles: string[] = [];
   for (const f of files) {
-    const raw = await readFile(join(dir, f), 'utf8');
+    const raw = await readFile(join(POSTS_DIR, f), 'utf8');
     const cs = raw.match(/^coverStyle:\s*"?([^"\n]+?)"?\s*$/m)?.[1]?.trim();
     if (cs) styles.push(cs);
   }
@@ -250,15 +248,9 @@ interface SaturatedSource {
 
 /**
  * URLs cited as `sources:` in posts published within the last
- * TITLE_LOOKBACK_DAYS days. These are "saturated" — citing them again
- * means writing about a topic that's already been covered, so they
- * are blocked at the validate() stage. The 14-day window matches
- * recentTitles so the rule has a natural expiry — after 14 days a
- * source can be re-cited from a different angle if needed.
- *
- * Also includes URLs from rejected drafts in _drafts/ — if a topic just
- * failed validation yesterday, the same source URLs should be blocked
- * today, otherwise the model keeps re-proposing the identical article.
+ * TITLE_LOOKBACK_DAYS days, plus URLs from rejected drafts in _drafts/.
+ * Re-citing one means the model is circling back to an already-covered
+ * topic, so these get blocked at validate().
  */
 async function loadSaturatedSources(): Promise<Map<string, SaturatedSource>> {
   const sat = new Map<string, SaturatedSource>();
@@ -274,35 +266,26 @@ async function loadSaturatedSources(): Promise<Map<string, SaturatedSource>> {
       if (Number.isNaN(ts) || ts < cutoff) continue;
       const raw = await readFile(join(dir, f), 'utf8');
       const slug = raw.match(/^slug:\s*"?([^"\n]+?)"?\s*$/m)?.[1]?.trim() ?? f;
-      // Extract the YAML sources block: `sources:` then indented `- url: ...` items
       const sourcesBlock = raw.match(/^sources:\s*\n((?:\s+.*\n)+)/m)?.[1];
       if (!sourcesBlock) continue;
       const urlMatches = sourcesBlock.matchAll(/^\s+url:\s*"?([^"\n]+?)"?\s*$/gm);
       for (const m of urlMatches) {
         const url = m[1].trim();
-        // First post to cite this URL "owns" it for the saturation window
         if (!sat.has(url)) sat.set(url, { url, citedBySlug: slug, citedDate: datePart });
       }
     }
   };
 
-  for (const lang of ['zh-TW', 'en'] as const) {
-    await collect(join(POSTS_DIR, lang));
-  }
+  await collect(POSTS_DIR);
   await collect(DRAFTS_DIR);
   return sat;
 }
 
 /**
- * Returns every slug ever used across both languages (zh-TW + en union)
- * AND every slug from rejected drafts in _drafts/. Slugs are URL
- * identities and must be unique forever — no time window. Including
- * draft slugs prevents the model from re-proposing the same topic that
- * already failed validation (e.g. the nomad-1.0.19 release draft that
- * showed up as attempt 1 three days running).
- *
- * Used both as a soft hint in the prompt ("forbidden slugs") and as a
- * hard reject in validate().
+ * Every slug ever used, plus every slug from rejected drafts in _drafts/.
+ * Slugs are URL identities and must be unique forever, so this has no time
+ * window. Used both as a soft hint in the prompt and as a hard reject in
+ * validate().
  */
 async function loadAllSlugs(): Promise<Set<string>> {
   const slugs = new Set<string>();
@@ -316,9 +299,7 @@ async function loadAllSlugs(): Promise<Set<string>> {
       if (m) slugs.add(m[1].trim());
     }
   };
-  for (const lang of ['zh-TW', 'en'] as const) {
-    await collect(join(POSTS_DIR, lang));
-  }
+  await collect(POSTS_DIR);
   await collect(DRAFTS_DIR);
   return slugs;
 }
@@ -333,9 +314,9 @@ function buildPrompt(
     ? `MODE: TIER-C-ONLY FALLBACK
 The previous attempt failed (either the topic overlapped with a recent post,
 or the article had factual errors). Skip TIER A and TIER B entirely. Pick
-ONE under-covered class / method / @Formula function from the HCL doc roots
-listed in TIER C below and write a focused, hands-on tutorial. Do not retry
-the same news topic — go to the docs.
+ONE under-covered admin task or server subsystem from the doc roots listed
+in TIER C below and write a focused, hands-on explainer. Do not retry the
+same news topic, go to the docs instead.
 
 `
     : '';
@@ -345,22 +326,30 @@ the same news topic — go to the docs.
   const saturatedBlock = saturatedSources.length === 0
     ? '(none yet)'
     : saturatedSources.map((s) => `- ${s.url} (cited by [${s.citedBySlug}] on ${s.citedDate})`).join('\n');
-  return `${tierConstraint}You are an editor for a daily HCL Domino news site. Your standards are:
-NEVER fabricate. EVERY factual claim must come from a real source you opened via
-the web_search tool in THIS session. Sources must be real URLs that load.
+  return `${tierConstraint}You are a senior HCL Domino administrator writing the daily post for a site
+read by other Domino administrators: the people who run the servers, not
+the people who write code against them. Your standards are:
+NEVER fabricate. EVERY factual claim must come from a real source you opened
+via the web_search tool in THIS session. Sources must be real URLs that load.
+
+Write like someone who has actually had the incident you're describing, not
+like a rewritten press release. Assume the reader is responsible for uptime,
+security, and compliance on a production Domino environment and wants
+something they can act on, not a feature summary they could get from the
+release notes alone.
 
 ============================================================
-HARD CONSTRAINTS — read these BEFORE picking a topic
+HARD CONSTRAINTS, read these BEFORE picking a topic
 ============================================================
 
 The script will hard-reject the article if any of these are violated.
 Read them first so you don't waste a generation on a doomed topic.
 
-(1) FORBIDDEN SLUGS — your "slug" output MUST NOT equal any of these.
-    Every slug ever published, both languages, no time window:
+(1) FORBIDDEN SLUGS, your "slug" output MUST NOT equal any of these.
+    Every slug ever published, no time window:
 ${forbiddenSlugs.length === 0 ? '    (none yet)' : forbiddenSlugs.map((s) => `    - ${s}`).join('\n')}
 
-(2) RECENT TOPICS — these stories were already published in the last
+(2) RECENT TOPICS, these stories were already published in the last
     ${TITLE_LOOKBACK_DAYS} days. They are CLOSED. Do NOT write another article on the
     same subject, even with a different angle or different slug.
     The Claude reviewer compares the description below against your draft
@@ -368,19 +357,19 @@ ${forbiddenSlugs.length === 0 ? '    (none yet)' : forbiddenSlugs.map((s) => `  
 
 ${recentBlock}
 
-(3) SATURATED SOURCE URLS — these URLs were cited as the primary source
+(3) SATURATED SOURCE URLS, these URLs were cited as the primary source
     of a published post in the last ${TITLE_LOOKBACK_DAYS} days. Do NOT include any
     of them in your "sources" array. If the topic you want to write
     requires citing one of these, that's your signal that the topic is
-    a duplicate — pick a different topic.
+    a duplicate, pick a different topic.
 
 ${saturatedBlock}
 
     PIVOT, DON'T WORK AROUND: if your candidate topic naturally cites
     any URL above, the script has been rejecting these articles every
     day this week. Don't try to substitute the saturated URL with a
-    weaker one and keep the same topic — the reviewer also flags topic
-    overlap. Pick a completely different class, feature, or story.
+    weaker one and keep the same topic, the reviewer also flags topic
+    overlap. Pick a completely different subsystem, task, or story.
     The TIER C doc roots below have hundreds of unwritten options.
 
 (4) NOTORIOUSLY OVER-COVERED TOPIC: HCL Domino 2026 / 14.5.1 release.
@@ -392,196 +381,160 @@ ${saturatedBlock}
 TASK
 ============================================================
 
-Find material for ONE article about HCL Domino or its ecosystem
-(HCL Notes, Domino REST API, Volt MX, HCL Nomad, AppDev Pack, Sametime, OpenNTF, etc.).
+Find material for ONE article about running, securing, or maintaining HCL
+Domino (server administration, not application development). In scope:
+Domino Server, Domino Directory, ID Vault, Domino REST API deployment and
+security, HCL Nomad rollout and management, Domino IQ operations, Sametime
+administration, HCL Traveler, and OpenNTF admin tooling.
 
 YOU MUST INVOKE web_search AT LEAST 3 TIMES with different queries before
 deciding there is nothing to write about. Suggested queries to rotate
 through (skip any that obviously map to a forbidden slug above):
-  - HCL Domino release 2025 OR 2026
-  - HCL Domino REST API
-  - HCL Nomad update
-  - OpenNTF project announcement
-  - HCL Volt MX
-  - HCL Sametime
-  - site:hcl-software.com Domino
-  - site:openntf.org
-  - HCL Ambassador blog Domino
+  - HCL Domino security advisory
+  - HCL Domino server administration
+  - HCL Domino release 2025 OR 2026 admin impact
+  - HCL Domino REST API deployment
+  - HCL Nomad admin rollout
+  - HCL Domino backup OR disaster recovery
+  - HCL Domino clustering OR high availability
+  - site:hcl-software.com Domino admin
+  - site:nashcom.de
+  - HCL Ambassador blog Domino administration
   - planetlotus.org
   - collaborationtoday.info
 
 CONTENT TIERS (TIER C is the safe default; TIER A only when you find
 genuinely new news that does NOT overlap a recent topic above):
-  TIER A — News from the last 14 days (release, security advisory, official announcement, conference recap).
+  TIER A, News from the last 14 days that an admin needs to act on:
+           security advisory, patch or hotfix, end-of-life or end-of-
+           support notice, a release with upgrade or compatibility
+           impact, or an official change to admin guidance.
            BEFORE choosing TIER A: confirm the story is NOT in "Recent
            topics" above and the URLs you'd cite are NOT in "Saturated
            source URLs" above. If either check fails, do not use TIER A.
-  TIER B — Technical post / tutorial / OpenNTF project from the last 60 days.
-  TIER C — Deep-dive tutorial on an under-covered Notes/Domino API or feature.
-           Use this any day when TIER A genuinely has no fresh story.
-           Pick ONE class / method / @Formula function / admin task from
-           the official docs and write a focused, hands-on explainer.
+  TIER B, A community admin post from the last 60 days: an incident
+           writeup, a monitoring or tuning approach, a migration story,
+           an OpenNTF admin tool.
+  TIER C, Deep-dive explainer on an under-covered admin task or server
+           subsystem. Use this any day when TIER A genuinely has no
+           fresh story.
 
-           Doc roots to mine (search inside these for under-covered topics):
-             - help.hcl-software.com/dom_designer/14.5.1/basic/     (LotusScript classes & methods)
-             - help.hcl-software.com/dom_designer/14.5.1/Java/      (Java back-end classes)
-             - help.hcl-software.com/dom_designer/14.5.1/Formula/   (@Formula functions)
-             - help.hcl-software.com/dom_designer/14.5.1/reference/ (XPages SSJS reference, including r_domino_*)
-             - opensource.hcltechsw.com/Domino-rest-api/            (Domino REST API endpoints)
-             - help.hcl-software.com/domino/14.5.1/admin/           (server admin tasks)
+           Doc roots to mine (search inside these for under-covered topics;
+           bump the version number in the path once a newer release ships):
+             - help.hcl-software.com/domino/14.5.1/admin/     (server admin tasks: install, upgrade, directory, security, replication)
+             - help.hcl-software.com/domino/14.5.1/inst_upgrade/ (installation and upgrade planning)
+             - opensource.hcltechsw.com/Domino-rest-api/       (Domino REST API endpoints and deployment)
+             - help.hcl-software.com/dom_designer/14.5.1/basic/ (only for the notes.ini / server document settings referenced from admin tasks, not for LotusScript syntax itself)
 
-           The class / method / function name in kebab-case is the slug.
+           The task or subsystem name in kebab-case is the slug.
            Examples that look NOT covered yet (verify against forbidden slugs!):
-             notes-xml-processor, notes-acl, notes-acl-entry,
-             notes-rich-text-item, notes-mime-entity, notes-stream,
-             notes-calendar, notes-newsletter, notes-registration,
-             notes-outline, notes-form, notes-embedded-object,
-             db-column-formula, picklist-formula, dblookup-formula,
-             nsf-replication-events, drapi-bulk-operations, etc.
+             transaction-logging-styles, daos-enable-tuning, id-vault-recovery,
+             directory-assistance-ldap, ddm-probes-setup, cluster-failover-tuning,
+             server-controller-restart-policy, compact-options-explained,
+             fixup-corruption-recovery, updall-scheduling, smtp-router-tuning,
+             tls-cipher-configuration, admin-process-requests, notes-ini-buffer-pool,
+             ha-replica-strategy, offline-domino-server-decommission, etc.
 
-           Cite 2+ official doc URLs and (if possible) one community article.
+           Cite 2+ official doc URLs and (if possible) one community article
+           written by a working admin (nashcom.de and similar are good fits).
 
 ACCEPTABLE SOURCE TYPES (rough priority):
   1. Official HCL pages: hcl-software.com, hcltechsw.com, hcl.com, support.hcl-software.com
-  2. HCL official documentation / help center pages
-  3. HCL Ambassador or HCL Master blogs
-  4. OpenNTF project pages and openntf.org articles
-  5. Community blog aggregators — planetlotus.org and collaborationtoday.info (cite the original blog when possible)
+  2. HCL official documentation / help center pages, admin guides
+  3. HCL Ambassador or HCL Master blogs written by practicing admins
+  4. OpenNTF project pages and openntf.org articles (admin-facing tools)
+  5. Community blog aggregators, planetlotus.org and collaborationtoday.info (cite the original blog when possible)
   6. GitHub release notes / READMEs from hcl-org or recognized community repos
   7. Reputable HCL business partners (panagenda, prominic, csi-international, belsoft, etc.)
   8. Conference recordings or slide decks (Engage, CollabSphere, OpenNTF webinars)
 
 UNACCEPTABLE:
-  - Made-up version numbers, dates, quotes, or URLs
+  - Made-up version numbers, dates, quotes, console command syntax, or URLs
   - Speculation with no source ("might", "could be")
   - AI-generated content farms
   - Sources you did not actually open during web_search
 
 Only return {"error":"insufficient_sources"} as a LAST resort. If TIER A and B
-yield only forbidden topics, fall back to TIER C — the doc roots above contain
-hundreds of un-covered classes/methods. There is essentially always a TIER C
+yield only forbidden topics, fall back to TIER C, the doc roots above contain
+plenty of under-covered admin tasks. There is essentially always a TIER C
 topic available; refusing to write one is almost never the right call.
 
-REQUIRED OUTPUT — STRICT JSON, no markdown fences, no commentary:
+REQUIRED OUTPUT, STRICT JSON, no markdown fences, no commentary:
 
 type Output =
   | { error: "insufficient_sources"; reason: string; queriesTried: string[] }
   | {
-      slug: string;             // kebab-case ascii, max 60 chars, descriptive
-      tags: string[];           // 2-4 tags, see TAG SELECTION below
+      slug: string;                 // kebab-case ascii, max 60 chars, descriptive
+      tags: string[];                // 2-4 tags, see TAG SELECTION below
       sources: { title: string; url: string }[]; // MINIMUM 2, MAXIMUM 6 real URLs you actually consulted
-      zh: {
-        title: string;          // 繁體中文標題, 25 字以內
-        description: string;    // 繁體中文摘要, 60-100 字
-        markdown: string;       // 繁體中文正文, 600-1200 字 Markdown, 含小標, 內文必須用 [描述](url) 格式內嵌至少 2 個來源
-      };
-      en: {
-        title: string;          // English title, under 80 chars
-        description: string;    // English summary, 25-45 words
-        markdown: string;       // English body 500-1000 words Markdown, with subheadings, MUST embed >= 2 inline source links [text](url)
-      };
+      relatedConsoleCommands: string[]; // server console commands this post references, exact syntax, [] if none
+      notesIniSettings: string[];       // notes.ini parameters this post references, [] if none
+      minDominoVersion: string;         // e.g. "12.0.2", omit the field entirely if the guidance applies to any supported version
+      title: string;                    // under 80 chars
+      description: string;              // 25-45 words, used as the homepage card summary
+      markdown: string;                 // 700-1300 words Markdown, with subheadings, MUST embed >= 3 inline source links [text](url)
     };
 
-TAG SELECTION — pick 2-4 tags drawn from these 4 axes. Prefer one from each
+TAG SELECTION, pick 2-4 tags drawn from these 4 axes. Prefer one from each
 axis that genuinely applies; never tag with all of them just to fill the slot.
 Tags are filters: a tag that fits every Domino post (e.g. "Domino", "HCL",
 "Notes") is forbidden because it adds zero signal. Pick the most specific
 tag that applies.
 
-  Axis 1 — Product / module (which thing is this post about):
+  Axis 1, Product / module (which thing is this post about):
     ${TAGS_PRODUCT.join(', ')}
 
-  Axis 2 — Technology / language (what is the code in):
-    ${TAGS_TECH.join(', ')}
+  Axis 2, Subsystem / mechanism (what part of the server does the work):
+    ${TAGS_SUBSYSTEM.join(', ')}
 
-  Axis 3 — Topic (what problem does the post address):
+  Axis 3, Topic (what operational problem the post addresses):
     ${TAGS_TOPIC.join(', ')}
 
-  Axis 4 — Content type (what kind of article is this):
+  Axis 4, Content type (what kind of article is this):
     ${TAGS_TYPE.join(', ')}
 
 Examples:
-  - A Domino 2026 release announcement → ["Release Notes", "Domino Server", "Domino IQ"]
-  - A DQL hands-on tutorial in LotusScript → ["Tutorial", "DQL", "LotusScript"]
-  - A note on tightening ID vault security → ["Admin", "Security", "Domino Server"]
+  - A Domino 2026 release announcement with upgrade impact -> ["Release Notes", "Domino Server", "Migration"]
+  - A hands-on walkthrough of enabling DAOS -> ["Tutorial", "DAOS", "Performance"]
+  - A postmortem on an ID Vault recovery gone wrong -> ["Incident Report", "ID Vault", "Security"]
+  - A note on tightening TLS cipher configuration -> ["Admin", "Security", "Domino Server"] (only use "Admin" style umbrella
+    topics when a more specific Topic tag genuinely does not fit better)
 
 CRITICAL RULES:
-- Use Traditional Chinese (zh-TW), NOT Simplified Chinese.
+- Write in plain, direct, professional English. No filler transitions, no
+  "in today's landscape," no vague-optimism conclusions. State the point,
+  back it with the source, move on.
 - Tags MUST be exact strings from the axes above.
 - Every URL in "sources" MUST be a real URL you opened during web_search.
-- Both zh.markdown and en.markdown MUST contain at least 2 inline links of the form [text](https://...).
-- INLINE-LINK DIVERSITY (this rule rejects more articles than any other —
+- The markdown body MUST contain at least 3 inline links of the form [text](https://...).
+- INLINE-LINK DIVERSITY (this rule rejects more articles than any other,
   read it carefully):
 
     BEFORE writing the body, plan the citations:
-    1. Your "sources" array MUST contain 3+ different URLs (class
-       page, method page, sibling-class page, @Formula function
-       page, blog post — pick a mix). Don't ship a draft with only
-       1-2 sources expecting to reuse them as anchors.
-    2. Each language body has ≥ 3 inline links of the form [text](url).
-    3. Each inline link points to a DIFFERENT URL from the others
-       in that same language body.
-    4. The combined zh + en inline links (≥ 6 total) hit ≥ 3 distinct
-       URLs. No single URL appears in more than 2 of those 6 anchors.
+    1. Your "sources" array MUST contain 2+ different URLs.
+    2. The body has >= 3 inline links of the form [text](url).
+    3. No single URL accounts for more than half of the inline links in
+       the body. If you have 4 inline links, at most 2 may point to the
+       same URL; the rest point elsewhere.
 
-    CORRECT EXAMPLE (notes-stream-style):
-      sources: [class doc, Open method doc, Truncate method doc]
-      zh body: 3 inline links → class doc, Open doc, Truncate doc
-      en body: 3 inline links → class doc, Open doc, Truncate doc
-      → 6 total / 3 URLs × 2 each = 33%. Passes.
+    CORRECT EXAMPLE:
+      sources: [admin task doc, a related server document setting doc, a community writeup]
+      body: 4 inline links, 2 point to the admin task doc, 1 to the setting doc, 1 to the community writeup
+      -> top URL is 2/4 = 50%. Passes.
 
     WRONG EXAMPLE (the rejection pattern we keep seeing):
       sources: [main page, secondary page]
       body anchors: every single anchor links to the main page
-      → 4-6 inline links, 1 unique URL = 80%-100%. REJECTED.
+      -> 4+ inline links, 1 unique URL. REJECTED.
 
   The "this is the canonical source" excuse for repeating a URL is
-  ALWAYS wrong here — pick a sub-page (a specific method, a related
-  class, an example page) for the second and third anchors. Look
-  these URLs up during web_search; don't invent them.
-- The zh and en versions cover the same story but read naturally — do not produce literal translation.
-- If unsure of any fact (date, version number, name), omit it entirely instead of guessing.
-
-ZH-TW LANGUAGE DISCIPLINE — readers complained about casual English
-words bleeding into Chinese narrative. Apply these rules to zh.markdown
-AND zh.title AND zh.description:
-
-  Keep in English (do NOT translate):
-  - Class names, method names, property names, constants — NotesView,
-    GetFirstDocument, AutoUpdate, MaxLevel
-  - Product / brand / file-format names — HCL Domino, Notes Client,
-    GitHub, NSF, DQL, JSON, API, GPT, Claude, OpenAI, Anthropic
-  - Identifier-shaped tokens — slug, kebab-case-string, X-Frame-Options
-  - Code shown inside backticks (\`like_this\`) stays as written
-
-  Translate to Traditional Chinese (do NOT leave English):
-  - Common narrative nouns: view → 視圖, navigator → 導航器,
-    entry → 條目, instance → 實例, document → 文件,
-    server → 伺服器, query → 查詢, header → 標頭
-  - Process / action words: fallback → 後備路徑 (or 改採 if a verb),
-    cron → 排程, prompt → 提示詞, issue → 回報問題,
-    deploy → 部署, refresh → 重新整理, restart → 重啟,
-    cache → 快取, buffer → 緩衝, batch → 批次
-  - Adjectives / status words: critical → 嚴重, fallback (n.) →
-    後備, custom → 自訂, default → 預設, optional → 選用,
-    legacy → 舊版, stable → 穩定
-  - Domain terms with established Chinese: full-text → 全文，
-    selection formula → 選取公式, leading wildcard → 前置萬用字元,
-    sort key column → 排序鍵欄位, design catalog → 設計目錄,
-    web search → 網路搜尋, internet site → 網際網路站台
-
-  When translating an established domain term for the FIRST time in
-  the article, append the original English in parentheses so beginners
-  can map the vocabulary, e.g.: 「視圖（view）」、「設計目錄
-  （design catalog）」、「選取公式（selection formula）」.
-  Subsequent mentions in the same article use the Chinese form alone.
-
-  When unsure whether a term is "domain English to keep" or "narrative
-  English to translate": prefer translation. The reader is Chinese-first.
-
-EN LANGUAGE DISCIPLINE — for the en.* fields, write in plain
-professional English. Don't transliterate the Chinese version's
-parenthetical glosses; an English reader doesn't need 'view (視圖)'.`;
+  ALWAYS wrong here, pick a sub-page (a specific admin task page, a
+  related server document setting, a community writeup) for the other
+  anchors. Look these URLs up during web_search, don't invent them.
+- If unsure of any fact (date, version number, exact console command syntax,
+  exact notes.ini parameter name), omit it entirely instead of guessing.
+  A wrong console command in a post read by people who run production
+  servers is worse than a shorter article.`;
 }
 
 function isValidUrl(url: string): boolean {
@@ -606,7 +559,7 @@ function inlineLinkUrls(markdown: string): string[] {
 }
 
 function validate(
-  article: BilingualArticle,
+  article: Article,
   forbiddenSlugs: Set<string>,
   saturatedSources: Map<string, SaturatedSource>
 ): void {
@@ -615,14 +568,10 @@ function validate(
   if (forbiddenSlugs.has(article.slug)) {
     errors.push(
       `Slug collision: "${article.slug}" already exists. The model ignored ` +
-        `the FORBIDDEN SLUGS list — refusing to overwrite an existing post.`
+        `the FORBIDDEN SLUGS list, refusing to overwrite an existing post.`
     );
   }
 
-  // Hard reject if any sources URL was already cited by a recent post.
-  // This catches "different slug, same news story citing the same official
-  // announcement" — the most common topic-overlap pattern that slips past
-  // the slug check.
   for (const s of article.sources ?? []) {
     const sat = s.url ? saturatedSources.get(s.url) : undefined;
     if (sat) {
@@ -661,25 +610,23 @@ function validate(
     );
   }
 
-  const zhLinks = countInlineLinks(article.zh?.markdown ?? '');
-  const enLinks = countInlineLinks(article.en?.markdown ?? '');
-  if (zhLinks < 2) errors.push(`zh body must have >= 2 inline links, got ${zhLinks}.`);
-  if (enLinks < 2) errors.push(`en body must have >= 2 inline links, got ${enLinks}.`);
+  const links = countInlineLinks(article.markdown ?? '');
+  if (links < 3) errors.push(`Body must have >= 3 inline links, got ${links}.`);
 
   // Catch the copy-paste-same-URL bug: if one URL dominates inline-link
   // destinations, the model just slapped the same href onto every anchor.
-  const allLinkUrls = [
-    ...inlineLinkUrls(article.zh?.markdown ?? ''),
-    ...inlineLinkUrls(article.en?.markdown ?? ''),
-  ];
-  if (allLinkUrls.length >= 4) {
+  // Threshold is looser than the original bilingual 40% figure because the
+  // sample size here is one body's worth of links, not two languages
+  // combined, so a stricter ratio would reject well-formed short articles.
+  const allLinkUrls = inlineLinkUrls(article.markdown ?? '');
+  if (allLinkUrls.length >= 3) {
     const counts = new Map<string, number>();
     for (const u of allLinkUrls) counts.set(u, (counts.get(u) ?? 0) + 1);
     const [topUrl, topCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
-    if (topCount / allLinkUrls.length >= 0.4) {
+    if (topCount / allLinkUrls.length > 0.5) {
       errors.push(
         `Inline-link diversity check failed: "${topUrl}" appears ${topCount}/${allLinkUrls.length} ` +
-          `times in inline links (>=40%). Likely a copy-paste error — each anchor should point to its own destination.`
+          `times in inline links (>50%). Likely a copy-paste error, each anchor should point to its own destination.`
       );
     }
   }
@@ -696,7 +643,7 @@ interface GenerateOptions {
   forceTierC: boolean;
 }
 
-async function generate(opts: GenerateOptions): Promise<BilingualArticle> {
+async function generate(opts: GenerateOptions): Promise<Article> {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY env var is required.');
   }
@@ -720,13 +667,9 @@ async function generate(opts: GenerateOptions): Promise<BilingualArticle> {
     model: MODEL,
     tools: [{ type: 'web_search_preview' }],
     input: prompt,
-    // Bilingual article (~600-1200 zh chars + ~500-1000 en words) plus the
-    // JSON wrapper easily blows past the default cap. 16k leaves headroom
-    // for the model to write a full TIER-C tutorial without truncation.
-    max_output_tokens: 16000,
+    max_output_tokens: 12000,
   });
 
-  // Detect truncation up front so the error message is actionable.
   if (response.status === 'incomplete') {
     const reason = response.incomplete_details?.reason ?? 'unknown';
     throw new Error(
@@ -757,13 +700,13 @@ async function generate(opts: GenerateOptions): Promise<BilingualArticle> {
     const reason = errObj.reason ?? 'unspecified';
     const tried = errObj.queriesTried?.length
       ? `\n  queries tried: ${errObj.queriesTried.join(' | ')}`
-      : '\n  (model did not report which queries it tried — likely searched 0 times)';
+      : '\n  (model did not report which queries it tried, likely searched 0 times)';
     throw new Error(`Model declined to write an article: ${reason}${tried}`);
   }
 
-  const article = parsed as BilingualArticle;
+  const article = parsed as Article;
 
-  if (!article.slug || !article.zh?.markdown || !article.en?.markdown) {
+  if (!article.slug || !article.markdown) {
     throw new Error('Generated article is missing required fields.');
   }
 
@@ -771,6 +714,11 @@ async function generate(opts: GenerateOptions): Promise<BilingualArticle> {
     .filter((t): t is string => typeof t === 'string')
     .filter((t) => (ALLOWED_TAGS as readonly string[]).includes(t));
   if (article.tags.length === 0) article.tags = ['News'];
+
+  article.relatedConsoleCommands = (article.relatedConsoleCommands ?? []).filter(
+    (c): c is string => typeof c === 'string'
+  );
+  article.notesIniSettings = (article.notesIniSettings ?? []).filter((c): c is string => typeof c === 'string');
 
   article.slug = article.slug
     .toLowerCase()
@@ -782,47 +730,44 @@ async function generate(opts: GenerateOptions): Promise<BilingualArticle> {
 }
 
 async function writePost(
-  lang: 'zh-TW' | 'en',
   slug: string,
-  data: BilingualArticle,
+  data: Article,
   dateForFilename: string,
   pubDateIso: string
 ): Promise<string> {
-  const langDir = join(POSTS_DIR, lang);
-  await mkdir(langDir, { recursive: true });
+  await mkdir(POSTS_DIR, { recursive: true });
   const filename = `${dateForFilename}-${slug}.md`;
-  const filepath = join(langDir, filename);
-  const langData = data[lang === 'zh-TW' ? 'zh' : 'en'];
+  const filepath = join(POSTS_DIR, filename);
   const fm = frontmatter({
-    title: langData.title,
-    description: langData.description,
+    title: data.title,
+    description: data.description,
     pubDate: pubDateIso,
-    lang,
     slug,
     tags: data.tags,
     sources: data.sources,
     cover: data.cover,
     coverStyle: data.coverStyle,
+    relatedConsoleCommands: data.relatedConsoleCommands,
+    notesIniSettings: data.notesIniSettings,
+    minDominoVersion: data.minDominoVersion,
   });
-  await writeFile(filepath, `${fm}${langData.markdown.trim()}\n`, 'utf8');
+  await writeFile(filepath, `${fm}${data.markdown.trim()}\n`, 'utf8');
   return filepath;
 }
 
 async function generateCover(
   client: OpenAI,
-  article: BilingualArticle
+  article: Article
 ): Promise<{ coverPath: string; styleId: string } | undefined> {
   if (SKIP_IMAGE) {
     console.log('[generate] SKIP_IMAGE=1, skipping cover image generation.');
     return undefined;
   }
   const primaryTag = article.tags[0] ?? 'HCL Domino';
-  // Sampling without replacement: avoid re-using the styles of the 6
-  // most recent posts so consecutive covers stay visually distinct.
   const recentStyles = await loadRecentCoverStyles(6);
   const result = await generateCoverImage(
     client,
-    article.en.title,
+    article.title,
     primaryTag,
     article.slug,
     COVERS_DIR,
@@ -831,24 +776,21 @@ async function generateCover(
   return result ?? undefined;
 }
 
-async function gateUrls(article: BilingualArticle): Promise<void> {
+async function gateUrls(article: Article): Promise<void> {
   const sourceUrls = article.sources.map((s) => s.url);
-  const inlineUrls = [
-    ...extractMarkdownLinks(article.zh.markdown),
-    ...extractMarkdownLinks(article.en.markdown),
-  ];
+  const inlineUrls = extractMarkdownLinks(article.markdown);
   const all = [...new Set([...sourceUrls, ...inlineUrls])];
   console.log(`[gate-urls] Verifying ${all.length} URL(s)...`);
   const results = await verifyAll(all);
   const broken = results.filter((r) => !r.ok);
   for (const r of results) {
     const tag = r.ok ? 'ok ' : 'BAD';
-    console.log(`  [${tag}] ${r.status} ${r.url}${r.reason ? ' — ' + r.reason : ''}`);
+    console.log(`  [${tag}] ${r.status} ${r.url}${r.reason ? ' - ' + r.reason : ''}`);
   }
   const brokenSources = broken.filter((b) => sourceUrls.includes(b.url));
   if (brokenSources.length > 0) {
     throw new Error(
-      `URL gate FAILED — ${brokenSources.length} source URL(s) are not reachable:\n` +
+      `URL gate FAILED, ${brokenSources.length} source URL(s) are not reachable:\n` +
         brokenSources.map((b) => `  - ${b.status} ${b.url}`).join('\n')
     );
   }
@@ -858,17 +800,14 @@ async function gateUrls(article: BilingualArticle): Promise<void> {
 }
 
 /** Run Claude review and log issues, but DO NOT throw. Caller decides. */
-async function runReview(
-  article: BilingualArticle,
-  recentPosts: RecentPost[]
-): Promise<ReviewResult | null> {
+async function runReview(article: Article, recentPosts: RecentPost[]): Promise<ReviewResult | null> {
   if (!process.env.ANTHROPIC_API_KEY) {
-    console.warn('[gate-review] ANTHROPIC_API_KEY not set — skipping AI review.');
+    console.warn('[gate-review] ANTHROPIC_API_KEY not set, skipping AI review.');
     return null;
   }
   const result = await reviewArticle(
-    article.en.title,
-    article.en.markdown,
+    article.title,
+    article.markdown,
     article.sources.map((s) => s.url),
     recentPosts
   );
@@ -900,51 +839,34 @@ function reviewBlocks(review: ReviewResult | null): { reasons: string[]; critica
   return { reasons, criticals };
 }
 
-/**
- * Save a rejected article (zh + en, no cover) to _drafts/ so the workflow
- * can upload it as an artifact for human salvage.
- */
-async function saveDraft(
-  article: BilingualArticle,
-  attempt: number,
-  review: ReviewResult | null,
-  reason: string
-): Promise<void> {
+/** Save a rejected article to _drafts/ so the workflow can upload it as an
+ * artifact for human salvage. */
+async function saveDraft(article: Article, attempt: number, review: ReviewResult | null, reason: string): Promise<void> {
   await mkdir(DRAFTS_DIR, { recursive: true });
   const date = todayIso();
   const pubDateIso = nowTaipeiTimestamp();
   const stem = `${date}-attempt${attempt}-${article.slug}`;
   const note =
-    `<!--\nREJECTED DRAFT — ${reason}\nattempt: ${attempt}\nslug: ${article.slug}\n` +
+    `<!--\nREJECTED DRAFT - ${reason}\nattempt: ${attempt}\nslug: ${article.slug}\n` +
     (review
       ? `topicOverlap: ${review.topicOverlap}${
           review.overlapWith ? ` (overlapWith=${review.overlapWith})` : ''
         }\nissues:\n${review.issues.map(formatIssue).join('\n')}\n`
       : '') +
     `-->\n\n`;
-  const fmZh = frontmatter({
-    title: article.zh.title,
-    description: article.zh.description,
+  const fm = frontmatter({
+    title: article.title,
+    description: article.description,
     pubDate: pubDateIso,
-    lang: 'zh-TW',
     slug: article.slug,
     tags: article.tags,
     sources: article.sources,
+    relatedConsoleCommands: article.relatedConsoleCommands,
+    notesIniSettings: article.notesIniSettings,
     draft: true,
   });
-  const fmEn = frontmatter({
-    title: article.en.title,
-    description: article.en.description,
-    pubDate: pubDateIso,
-    lang: 'en',
-    slug: article.slug,
-    tags: article.tags,
-    sources: article.sources,
-    draft: true,
-  });
-  await writeFile(join(DRAFTS_DIR, `${stem}.zh-TW.md`), `${fmZh}${note}${article.zh.markdown.trim()}\n`, 'utf8');
-  await writeFile(join(DRAFTS_DIR, `${stem}.en.md`), `${fmEn}${note}${article.en.markdown.trim()}\n`, 'utf8');
-  console.log(`[draft] Saved rejected article to _drafts/${stem}.{zh-TW,en}.md`);
+  await writeFile(join(DRAFTS_DIR, `${stem}.md`), `${fm}${note}${article.markdown.trim()}\n`, 'utf8');
+  console.log(`[draft] Saved rejected article to _drafts/${stem}.md`);
 }
 
 /** Append markdown to GITHUB_STEP_SUMMARY if the env var is set. */
@@ -958,13 +880,12 @@ async function appendStepSummary(md: string): Promise<void> {
 async function setOutput(key: string, value: string): Promise<void> {
   const path = process.env.GITHUB_OUTPUT;
   if (!path) return;
-  // Use heredoc form for safe multiline values
   await appendFile(path, `${key}<<__CCDEOF__\n${value}\n__CCDEOF__\n`, 'utf8');
 }
 
 interface AttemptResult {
   ok: boolean;
-  article?: BilingualArticle;
+  article?: Article;
   review?: ReviewResult | null;
   failure?: { stage: string; reason: string };
 }
@@ -975,18 +896,13 @@ async function attempt(
   forceTierC: boolean,
   recentPosts: RecentPost[]
 ): Promise<AttemptResult> {
-  let article: BilingualArticle;
+  let article: Article;
   try {
     article = await generate({ forbiddenSlugs, saturatedSources, recentPosts, forceTierC });
   } catch (err) {
     return { ok: false, failure: { stage: 'generate', reason: String(err instanceof Error ? err.message : err) } };
   }
 
-  // Slug collision is a "model ignored the directive" failure — we don't
-  // want to save these as drafts (the content is on the wrong topic by
-  // definition). Other validate() failures (broken sources, link-diversity,
-  // saturated URL, etc.) ARE content quality issues worth salvaging, so
-  // they get tagged with stage='validate' instead of 'generate'.
   try {
     validate(article, forbiddenSlugs, saturatedSources);
   } catch (err) {
@@ -1028,7 +944,7 @@ async function attempt(
   return { ok: true, article, review };
 }
 
-async function publish(article: BilingualArticle, fallbackReason: string | null): Promise<void> {
+async function publish(article: Article, fallbackReason: string | null): Promise<void> {
   const client = new OpenAI();
   const cover = await generateCover(client, article);
   if (cover) {
@@ -1038,9 +954,8 @@ async function publish(article: BilingualArticle, fallbackReason: string | null)
 
   const dateForFilename = todayIso();
   const pubDateIso = nowTaipeiTimestamp();
-  const zhPath = await writePost('zh-TW', article.slug, article, dateForFilename, pubDateIso);
-  const enPath = await writePost('en', article.slug, article, dateForFilename, pubDateIso);
-  console.log(`[publish] Wrote:\n  ${zhPath}\n  ${enPath}`);
+  const path = await writePost(article.slug, article, dateForFilename, pubDateIso);
+  console.log(`[publish] Wrote: ${path}`);
   if (article.cover) console.log(`[publish] Cover: ${article.cover} (style=${article.coverStyle})`);
   console.log(`[publish] Sources used:`);
   for (const s of article.sources) console.log(`  - ${s.title}: ${s.url}`);
@@ -1061,26 +976,23 @@ async function main() {
   const saturatedSources = await loadSaturatedSources();
   const summary: string[] = ['# Daily article run\n'];
 
-  // Attempt 1 — normal mode
   console.log('[main] Attempt 1: normal mode (TIER A/B/C all allowed)');
   const r1 = await attempt(forbiddenSlugs, saturatedSources, false, recentPosts);
   if (r1.ok && r1.article) {
     summary.push(
-      `**Result:** ✅ Published \`${r1.article.slug}\` on first try.`,
+      `**Result:** Published \`${r1.article.slug}\` on first try.`,
       '',
-      `- Title (zh): ${r1.article.zh.title}`,
-      `- Title (en): ${r1.article.en.title}`
+      `- Title: ${r1.article.title}`
     );
     await publish(r1.article, null);
     await appendStepSummary(summary.join('\n'));
     return;
   }
 
-  // Attempt 1 failed — log + maybe save draft
   const reason1 = r1.failure?.reason ?? 'unknown';
   console.warn(`[main] Attempt 1 failed at "${r1.failure?.stage}": ${reason1}`);
   summary.push(
-    `## Attempt 1 — failed at \`${r1.failure?.stage}\``,
+    `## Attempt 1, failed at \`${r1.failure?.stage}\``,
     '',
     '```',
     reason1.length > 1500 ? reason1.slice(0, 1500) + '\n... [truncated]' : reason1,
@@ -1089,26 +1001,20 @@ async function main() {
   );
   if (r1.article) {
     forbiddenSlugs.add(r1.article.slug);
-    // Save draft if it was a content issue (review or urls), not just slug collision
     if (r1.failure?.stage !== 'generate') {
       await saveDraft(r1.article, 1, r1.review ?? null, reason1);
-      summary.push(
-        `Rejected draft saved to \`_drafts/\` and uploaded as workflow artifact.`,
-        ''
-      );
+      summary.push(`Rejected draft saved to \`_drafts/\` and uploaded as workflow artifact.`, '');
     }
   }
 
-  // Attempt 2 — TIER C only, forbidden set extended
   console.log('[main] Attempt 2: TIER C-only fallback');
-  summary.push('## Attempt 2 — TIER C-only fallback', '');
+  summary.push('## Attempt 2, TIER C-only fallback', '');
   const r2 = await attempt(forbiddenSlugs, saturatedSources, true, recentPosts);
   if (r2.ok && r2.article) {
     summary.push(
-      `**Result:** ✅ Published \`${r2.article.slug}\` via TIER C fallback.`,
+      `**Result:** Published \`${r2.article.slug}\` via TIER C fallback.`,
       '',
-      `- Title (zh): ${r2.article.zh.title}`,
-      `- Title (en): ${r2.article.en.title}`
+      `- Title: ${r2.article.title}`
     );
     const fallbackReason = `attempt 1 rejected (${r1.failure?.stage}: ${reason1.split('\n')[0].slice(0, 200)})`;
     await publish(r2.article, fallbackReason);
@@ -1119,10 +1025,10 @@ async function main() {
   const reason2 = r2.failure?.reason ?? 'unknown';
   console.error(`[main] Attempt 2 also failed at "${r2.failure?.stage}": ${reason2}`);
   summary.push(
-    `**Result:** ❌ Both attempts failed.`,
+    `**Result:** Both attempts failed.`,
     '',
-    `- Attempt 1: \`${r1.failure?.stage}\` — ${reason1.split('\n')[0].slice(0, 200)}`,
-    `- Attempt 2: \`${r2.failure?.stage}\` — ${reason2.split('\n')[0].slice(0, 200)}`,
+    `- Attempt 1: \`${r1.failure?.stage}\`, ${reason1.split('\n')[0].slice(0, 200)}`,
+    `- Attempt 2: \`${r2.failure?.stage}\`, ${reason2.split('\n')[0].slice(0, 200)}`,
     ''
   );
   if (r2.article) {
