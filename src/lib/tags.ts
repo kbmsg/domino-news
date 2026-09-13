@@ -1,6 +1,12 @@
 /**
  * Per-tag color palette. Each tag maps to a category that drives chip color.
  * If a tag isn't listed it falls back to the "meta" palette.
+ *
+ * Retargeted from the developer-focused taxonomy (which organized tags
+ * around programming languages: LotusScript, Java, XPages) to an admin
+ * taxonomy organized around server subsystems and operational concerns.
+ * The four-axis structure is unchanged; only the vocabulary in each axis
+ * changed to match what a Domino administrator actually searches for.
  */
 
 export type TagPalette = {
@@ -16,7 +22,7 @@ const PRODUCT: TagPalette = {
   bgDark: '#451a1a',
   fgDark: '#fca5a5',
 };
-const TECH: TagPalette = {
+const SUBSYSTEM: TagPalette = {
   bg: '#dbeafe',
   fg: '#1d4ed8',
   bgDark: '#172554',
@@ -36,45 +42,49 @@ const META: TagPalette = {
 };
 
 const TAG_CATEGORIES: Record<string, TagPalette> = {
-  // Product / module
+  // Product / module (what the post is about)
   'Domino Server': PRODUCT,
   'Notes Client': PRODUCT,
-  'Domino Designer': PRODUCT,
+  'Domino Directory': PRODUCT,
+  'ID Vault': PRODUCT,
   'Domino REST API': PRODUCT,
-  'Volt MX': PRODUCT,
-  Nomad: PRODUCT,
-  'AppDev Pack': PRODUCT,
-  Sametime: PRODUCT,
+  'HCL Nomad': PRODUCT,
   'Domino IQ': PRODUCT,
+  Sametime: PRODUCT,
+  'HCL Traveler': PRODUCT,
 
-  // Technology / language
-  LotusScript: TECH,
-  Formula: TECH,
-  Java: TECH,
-  XPages: TECH,
-  JavaScript: TECH,
-  DQL: TECH,
-  OIDC: TECH,
-  'Notes UI': TECH,
+  // Subsystem / mechanism (what part of the server does the work)
+  Router: SUBSYSTEM,
+  Replicator: SUBSYSTEM,
+  'HTTP Task': SUBSYSTEM,
+  'Agent Manager': SUBSYSTEM,
+  DAOS: SUBSYSTEM,
+  'Transaction Logging': SUBSYSTEM,
+  Clustering: SUBSYSTEM,
+  'Directory Assistance': SUBSYSTEM,
+  'Console Commands': SUBSYSTEM,
+  'Notes.ini': SUBSYSTEM,
+  OIDC: SUBSYSTEM,
 
-  // Topic
+  // Topic (what operational problem the post addresses)
   Security: TOPIC,
   Performance: TOPIC,
   Migration: TOPIC,
-  Backup: TOPIC,
-  DevOps: TOPIC,
-  Admin: TOPIC,
+  'Backup and Recovery': TOPIC,
+  'High Availability': TOPIC,
+  Compliance: TOPIC,
+  Licensing: TOPIC,
+  Monitoring: TOPIC,
 
   // Content type
   'Release Notes': META,
   Tutorial: META,
   News: META,
   Community: META,
+  'Incident Report': META,
 
   // Additional tags in use (kept in sync with tagAxis below)
   Domino: PRODUCT,
-  DRAPI: PRODUCT,
-  OpenNTF: PRODUCT,
   AI: TOPIC,
   Container: TOPIC,
 };
@@ -86,40 +96,43 @@ export function tagPalette(tag: string): TagPalette {
 /**
  * Which of the four taxonomy axes a tag belongs to. Drives the grouped
  * filter bar on the "all posts" page. Kept consistent with the palette
- * above: PRODUCT/TECH/TOPIC map to their colours, TYPE uses the META
+ * above: PRODUCT/SUBSYSTEM/TOPIC map to their colours, TYPE uses the META
  * (slate) palette. Unknown tags fall to TYPE so they still group somewhere.
  */
-export type TagAxis = 'TECH' | 'PRODUCT' | 'TOPIC' | 'TYPE';
+export type TagAxis = 'SUBSYSTEM' | 'PRODUCT' | 'TOPIC' | 'TYPE';
 
 const TAG_AXIS: Record<string, TagAxis> = {
   'Domino Server': 'PRODUCT',
   'Notes Client': 'PRODUCT',
-  'Domino Designer': 'PRODUCT',
+  'Domino Directory': 'PRODUCT',
+  'ID Vault': 'PRODUCT',
   'Domino REST API': 'PRODUCT',
-  'Volt MX': 'PRODUCT',
-  Nomad: 'PRODUCT',
-  'AppDev Pack': 'PRODUCT',
-  Sametime: 'PRODUCT',
+  'HCL Nomad': 'PRODUCT',
   'Domino IQ': 'PRODUCT',
+  Sametime: 'PRODUCT',
+  'HCL Traveler': 'PRODUCT',
   Domino: 'PRODUCT',
-  DRAPI: 'PRODUCT',
-  OpenNTF: 'PRODUCT',
 
-  LotusScript: 'TECH',
-  Formula: 'TECH',
-  Java: 'TECH',
-  XPages: 'TECH',
-  JavaScript: 'TECH',
-  DQL: 'TECH',
-  OIDC: 'TECH',
-  'Notes UI': 'TECH',
+  Router: 'SUBSYSTEM',
+  Replicator: 'SUBSYSTEM',
+  'HTTP Task': 'SUBSYSTEM',
+  'Agent Manager': 'SUBSYSTEM',
+  DAOS: 'SUBSYSTEM',
+  'Transaction Logging': 'SUBSYSTEM',
+  Clustering: 'SUBSYSTEM',
+  'Directory Assistance': 'SUBSYSTEM',
+  'Console Commands': 'SUBSYSTEM',
+  'Notes.ini': 'SUBSYSTEM',
+  OIDC: 'SUBSYSTEM',
 
   Security: 'TOPIC',
   Performance: 'TOPIC',
   Migration: 'TOPIC',
-  Backup: 'TOPIC',
-  DevOps: 'TOPIC',
-  Admin: 'TOPIC',
+  'Backup and Recovery': 'TOPIC',
+  'High Availability': 'TOPIC',
+  Compliance: 'TOPIC',
+  Licensing: 'TOPIC',
+  Monitoring: 'TOPIC',
   AI: 'TOPIC',
   Container: 'TOPIC',
 
@@ -127,25 +140,29 @@ const TAG_AXIS: Record<string, TagAxis> = {
   Tutorial: 'TYPE',
   News: 'TYPE',
   Community: 'TYPE',
+  'Incident Report': 'TYPE',
 };
 
 export function tagAxis(tag: string): TagAxis {
   return TAG_AXIS[tag] ?? 'TYPE';
 }
 
-/** Display order + labels for the axis groups, per language. */
-export const TAG_AXIS_ORDER: TagAxis[] = ['TECH', 'PRODUCT', 'TOPIC', 'TYPE'];
+/** Display order + labels for the axis groups. English-only site, so the
+ * label record dropped the zh-TW column that the original kept for its
+ * bilingual filter bar. */
+export const TAG_AXIS_ORDER: TagAxis[] = ['SUBSYSTEM', 'PRODUCT', 'TOPIC', 'TYPE'];
 
-export const TAG_AXIS_LABEL: Record<TagAxis, { 'zh-TW': string; en: string }> = {
-  TECH: { 'zh-TW': '技術', en: 'Tech' },
-  PRODUCT: { 'zh-TW': '產品/模組', en: 'Product' },
-  TOPIC: { 'zh-TW': '主題', en: 'Topic' },
-  TYPE: { 'zh-TW': '類型', en: 'Type' },
+export const TAG_AXIS_LABEL: Record<TagAxis, { en: string }> = {
+  SUBSYSTEM: { en: 'Subsystem' },
+  PRODUCT: { en: 'Product' },
+  TOPIC: { en: 'Topic' },
+  TYPE: { en: 'Type' },
 };
 
 /**
  * Deterministic gradient pair from a slug, used as a fallback cover when no
- * generated image exists. Maps the slug hash to two HSL colors.
+ * generated image exists. Maps the slug hash to two HSL colors. Unchanged
+ * from the original, this logic has nothing to do with audience.
  */
 export function slugGradient(slug: string): { from: string; to: string } {
   let h = 0;
