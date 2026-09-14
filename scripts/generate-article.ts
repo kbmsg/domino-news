@@ -908,6 +908,33 @@ interface AttemptResult {
   failure?: { stage: string; reason: string };
 }
 
+/**
+ * True when an attempt failed for a CONTENT-QUALITY reason, the review gate
+ * catching topic overlap or fabricated/dangerous guidance, source
+ * validation rejecting it, a broken source URL, or the model itself
+ * declining because it couldn't find real sources, rather than an
+ * INFRASTRUCTURE problem (missing API key, network failure, a malformed
+ * response the code couldn't even parse).
+ *
+ * This distinction exists because a day where every attempt gets correctly
+ * rejected is the review layer doing exactly its job, not a bug, and
+ * main() uses this to decide whether that should exit 0 (quiet, no article
+ * today, nothing actually broken) or exit 1 (loud, something needs a
+ * human). Only a known, named content-rejection shape counts, anything
+ * else defaults to "not a content rejection" so a genuinely new failure
+ * mode still fails loudly instead of silently going green.
+ */
+function isContentRejection(failure: { stage: string; reason: string } | undefined): boolean {
+  if (!failure) return false;
+  if (failure.stage === 'validate' || failure.stage === 'urls' || failure.stage === 'review') {
+    return true;
+  }
+  if (failure.stage === 'generate' && failure.reason.startsWith('Model declined to write an article')) {
+    return true;
+  }
+  return false;
+}
+
 async function attempt(
   forbiddenSlugs: Set<string>,
   saturatedSources: Map<string, SaturatedSource>,
@@ -1053,8 +1080,34 @@ async function main() {
     await saveDraft(r2.article, 2, r2.review ?? null, reason2);
     summary.push(`Rejected draft saved to \`_drafts/\`. Both attempts available as workflow artifact.`, '');
   }
-  await appendStepSummary(summary.join('\n'));
   await setOutput('published', 'false');
+
+  const bothContentRejections = isContentRejection(r1.failure) && isContentRejection(r2.failure);
+  await setOutput('content_rejected', String(bothContentRejections));
+
+  if (bothContentRejections) {
+    // Both attempts were correctly rejected for quality/safety reasons, not
+    // an error. Exit 0 so the workflow run shows green: nothing is broken,
+    // there just isn't a publishable article today. The rejected draft(s)
+    // are still saved to _drafts/ and uploaded as a workflow artifact for
+    // manual salvage, same as before.
+    summary.push(
+      'No article published today: both attempts were correctly rejected for content ' +
+        'quality (not a pipeline error). See the rejected draft(s) above for what got caught.',
+      ''
+    );
+    await appendStepSummary(summary.join('\n'));
+    console.log(
+      '[main] Both attempts were rejected for content-quality reasons, not an error. ' +
+        'Exiting 0: nothing published today, nothing actually broken.'
+    );
+    return;
+  }
+
+  // At least one attempt failed for a reason that isn't a recognized
+  // content rejection, an infra problem, a bug, or something new this
+  // classifier doesn't know about yet. Fail loudly rather than guess.
+  await appendStepSummary(summary.join('\n'));
   throw new Error(
     `Both attempts failed.\n  attempt 1 (${r1.failure?.stage}): ${reason1}\n  attempt 2 (${r2.failure?.stage}): ${reason2}`
   );

@@ -55,8 +55,8 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      - name: Commit rejected drafts to _drafts/ (on failure)
-        if: failure() && hashFiles('_drafts/*.md') != ''
+      - name: Commit rejected drafts to _drafts/
+        if: always() && hashFiles('_drafts/*.md') != ''
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
