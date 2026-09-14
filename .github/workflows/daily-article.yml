@@ -113,6 +113,16 @@ jobs:
           echo "Push still failing after 3 attempts."
           exit 1
 
+      - name: Publish draft to Blogger
+        if: steps.commit.outputs.committed == 'true'
+        env:
+          POST_SLUG: ${{ steps.generate.outputs.slug }}
+          BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
+          BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
+          BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
+          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
+        run: npx tsx scripts/publish-to-blogger.ts
+
       - name: Trigger Pages deploy
         if: steps.commit.outputs.committed == 'true'
         env:
