@@ -929,8 +929,18 @@ function isContentRejection(failure: { stage: string; reason: string } | undefin
   if (failure.stage === 'validate' || failure.stage === 'urls' || failure.stage === 'review') {
     return true;
   }
-  if (failure.stage === 'generate' && failure.reason.startsWith('Model declined to write an article')) {
-    return true;
+  if (failure.stage === 'generate') {
+    // validate() relabels a slug-collision failure's stage from "validate"
+    // to "generate" (see the `attempt()` function below) so a duplicate
+    // topic doesn't waste a saved draft, it's still a content-dedup
+    // rejection though, not an infrastructure problem, same for the
+    // generic "Article validation failed" shape in case another validation
+    // message ever gets relabeled the same way.
+    return (
+      failure.reason.startsWith('Model declined to write an article') ||
+      failure.reason.includes('Slug collision') ||
+      failure.reason.startsWith('Article validation failed')
+    );
   }
   return false;
 }
