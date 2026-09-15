@@ -247,10 +247,16 @@ interface SaturatedSource {
 }
 
 /**
- * URLs cited as `sources:` in posts published within the last
- * TITLE_LOOKBACK_DAYS days, plus URLs from rejected drafts in _drafts/.
- * Re-citing one means the model is circling back to an already-covered
- * topic, so these get blocked at validate().
+ * URLs cited as `sources:` in posts actually PUBLISHED within the last
+ * TITLE_LOOKBACK_DAYS days. Re-citing one means the model is circling back
+ * to an already-covered topic, so these get blocked at validate().
+ *
+ * Deliberately does NOT scan _drafts/: a rejected draft was never shown to
+ * a reader, so its sources aren't actually "covered" yet. Counting them
+ * used to mean every rejection permanently poisoned that URL for up to two
+ * weeks, and a day with several rejected attempts (e.g. manual re-runs
+ * while testing) could starve every later attempt of usable sources for no
+ * real reason.
  */
 async function loadSaturatedSources(): Promise<Map<string, SaturatedSource>> {
   const sat = new Map<string, SaturatedSource>();
@@ -277,15 +283,19 @@ async function loadSaturatedSources(): Promise<Map<string, SaturatedSource>> {
   };
 
   await collect(POSTS_DIR);
-  await collect(DRAFTS_DIR);
   return sat;
 }
 
 /**
- * Every slug ever used, plus every slug from rejected drafts in _drafts/.
- * Slugs are URL identities and must be unique forever, so this has no time
- * window. Used both as a soft hint in the prompt and as a hard reject in
- * validate().
+ * Every slug ever actually PUBLISHED. Slugs are URL identities and must be
+ * unique forever, so this has no time window. Used both as a soft hint in
+ * the prompt and as a hard reject in validate().
+ *
+ * Deliberately does NOT scan _drafts/: a rejected draft's slug was never a
+ * live URL, so nothing collides if a later attempt reuses it. Forbidding it
+ * forever (the old behavior) meant every rejection permanently retired that
+ * topic, which is how a handful of same-day re-runs could leave the model
+ * with fewer and fewer viable topics for no real reason.
  */
 async function loadAllSlugs(): Promise<Set<string>> {
   const slugs = new Set<string>();
@@ -300,7 +310,6 @@ async function loadAllSlugs(): Promise<Set<string>> {
     }
   };
   await collect(POSTS_DIR);
-  await collect(DRAFTS_DIR);
   return slugs;
 }
 
