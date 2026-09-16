@@ -14,7 +14,7 @@
  *   1. Load recent post titles to avoid duplicates.
  *   2. Ask OpenAI (with web_search) to find ONE noteworthy story published in
  *      the last 72 hours, citing real sources only.
- *   3. Validate: >=2 real source URLs, body contains >=3 inline links, no
+ *   3. Validate: >=2 real source URLs, body contains >=2 inline links, no
  *      banned placeholder hosts (example.com, etc.), no single URL
  *      dominating the citations.
  *   4. Write Markdown into src/content/posts/YYYY-MM-DD-slug.md.
@@ -462,10 +462,16 @@ genuinely new news that does NOT overlap a recent topic above):
              tls-cipher-configuration, admin-process-requests, notes-ini-buffer-pool,
              ha-replica-strategy, offline-domino-server-decommission, etc.
 
-           Cite 2+ official doc URLs and (if possible) one community article
-           written by a working admin (nashcom.de and similar are good fits).
+           Cite 2+ sources, and at least ONE MUST be independent of HCL (not
+           on hcl-software.com, hcltechsw.com, hcl.com, or support.hcl-software.com):
+           a community blog (nashcom.de and similar are good fits), an HCL
+           Ambassador/Master writeup, planetlotus.org, collaborationtoday.info,
+           OpenNTF, or a partner writeup (panagenda, prominic, csi-international,
+           belsoft). Do not cite HCL's own doc pages as your only source, that's
+           the #1 cause of hitting the saturated-source block on a doc-heavy day.
 
-ACCEPTABLE SOURCE TYPES (rough priority):
+ACCEPTABLE SOURCE TYPES, cite from AT LEAST TWO of these categories, not
+just category 1-2, official HCL material alone is not enough:
   1. Official HCL pages: hcl-software.com, hcltechsw.com, hcl.com, support.hcl-software.com
   2. HCL official documentation / help center pages, admin guides
   3. HCL Ambassador or HCL Master blogs written by practicing admins
@@ -499,7 +505,7 @@ type Output =
       minDominoVersion: string;         // e.g. "12.0.2", omit the field entirely if the guidance applies to any supported version
       title: string;                    // under 80 chars
       description: string;              // 25-45 words, used as the homepage card summary
-      markdown: string;                 // 700-1300 words Markdown, with subheadings, MUST embed >= 3 inline source links [text](url)
+      markdown: string;                 // 700-1300 words Markdown, with subheadings, MUST embed >= 2 inline source links [text](url)
     };
 
 TAG SELECTION, pick 2-4 tags drawn from these 4 axes. Prefer one from each
@@ -533,13 +539,13 @@ CRITICAL RULES:
   back it with the source, move on.
 - Tags MUST be exact strings from the axes above.
 - Every URL in "sources" MUST be a real URL you opened during web_search.
-- The markdown body MUST contain at least 3 inline links of the form [text](https://...).
+- The markdown body MUST contain at least 2 inline links of the form [text](https://...).
 - INLINE-LINK DIVERSITY (this rule rejects more articles than any other,
   read it carefully):
 
     BEFORE writing the body, plan the citations:
     1. Your "sources" array MUST contain 2+ different URLs.
-    2. The body has >= 3 inline links of the form [text](url).
+    2. The body has >= 2 inline links of the form [text](url).
     3. No single URL accounts for more than half of the inline links in
        the body. If you have 4 inline links, at most 2 may point to the
        same URL; the rest point elsewhere.
@@ -638,7 +644,7 @@ function validate(
   }
 
   const links = countInlineLinks(article.markdown ?? '');
-  if (links < 3) errors.push(`Body must have >= 3 inline links, got ${links}.`);
+  if (links < 2) errors.push(`Body must have >= 2 inline links, got ${links}.`);
 
   // Catch the copy-paste-same-URL bug: if one URL dominates inline-link
   // destinations, the model just slapped the same href onto every anchor.
