@@ -19,6 +19,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { sanitizeControlCharsInJsonStrings } from './json-sanitize.js';
 
 export type Severity = 'critical' | 'major' | 'minor';
 
@@ -43,6 +44,15 @@ export interface ReviewResult {
 }
 
 const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+// A detailed critique of a long admin article (several issues, each with a
+// quoted location + problem + suggested fix, written out in full) can
+// comfortably run past a couple thousand tokens. The old 2000-token cap
+// routinely cut the response off before the closing braces, which looked
+// like a JSON parsing bug but was really just not enough budget. Sized
+// generously here since a truncated-response retry is far more expensive
+// (a wasted article generation + a misleading "both attempts failed"
+// report) than the token cost of headroom that mostly goes unused.
+const MAX_TOKENS = 8192;
 
 function buildPrompt(
   title: string,
@@ -151,20 +161,38 @@ export async function reviewArticle(
   console.log(`[review] Calling ${MODEL} for fact-check + overlap check...`);
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 2000,
+    max_tokens: MAX_TOKENS,
     messages: [{ role: 'user', content: prompt }],
   });
 
   const block = response.content[0];
   const text = block && block.type === 'text' ? block.text : '';
+
+  // A response cut off mid-JSON by hitting the token cap is a pipeline
+  // problem (give it more room), not the reviewer's verdict. Catching it
+  // here, tagged distinctly from a genuine parse error, lets the caller
+  // (generate-article.ts's isContentRejection) tell "the model correctly
+  // rejected this article" apart from "we never actually got a reviewed
+  // verdict", so the latter fails the run loudly instead of quietly
+  // counting as a clean, intentional rejection.
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error(
+      `Review response truncated: hit max_tokens (${MAX_TOKENS}) before the model finished its ` +
+        `JSON output. Raise MAX_TOKENS in scripts/lib/review-article.ts. ` +
+        `Partial output (${text.length} chars):\n${text}`
+    );
+  }
+
   const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  const sanitized = sanitizeControlCharsInJsonStrings(cleaned);
 
   let parsed: { issues?: ReviewIssue[]; topicOverlap?: boolean; overlapWith?: string };
   try {
-    parsed = JSON.parse(cleaned);
+    parsed = JSON.parse(sanitized);
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.error('[review] Failed to parse review JSON. Raw:\n', text);
-    throw err;
+    throw new Error(`Review JSON parse error: ${msg}\nRaw output:\n${text}`);
   }
 
   return {
